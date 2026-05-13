@@ -1,6 +1,12 @@
 import { FormEvent, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
+import {
+  canRaiseException,
+  canScanStep,
+  isAwaitingDecision,
+  isOverride,
+} from '../domain/item-actions';
 import type { ScanStepResult, StaffSession, WashItemView } from '../types';
 import { itemStatusLabel, stepLabel } from '../utils';
 import { ErrorNotice } from './ErrorNotice';
@@ -45,15 +51,10 @@ export function StepScanScreen({
   }
 
   const state = scanResult ? scanResult.processingState : foundItem?.processingState;
-  const isOverride = state?.currentStepSource === 'OVERRIDE';
-  const isAwaitingDecision = state?.currentStep?.stepType === 'WAIT_CUSTOMER_DECISION';
-  const canScan = !!foundItem?.tagBarcode && !state?.isPlanCompleted && !isAwaitingDecision;
-  const INSPECTION_STEP_TYPES = ['INSPECTING', 'RE_INSPECTION', 'PREMIUM_INSPECTING'];
-  const canRaiseException =
-    foundItem &&
-    (foundItem.status === 'SORTED' || foundItem.status === 'PROCESSING') &&
-    !!state?.currentStep &&
-    INSPECTION_STEP_TYPES.includes(state.currentStep.stepType);
+  const override = isOverride(state);
+  const awaitingDecision = isAwaitingDecision(state);
+  const canScan = !!foundItem && canScanStep(foundItem, state);
+  const exceptionAvailable = !!foundItem && canRaiseException(foundItem, state);
 
   return (
     <>
@@ -97,7 +98,7 @@ export function StepScanScreen({
         <div className={`wash-card ${scanResult?.processingState?.isPlanCompleted ? 'wash-card-success' : ''}`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
             <span className="item-name">{foundItem.displayNameSnapshot}</span>
-            <ItemStatusBadge status={foundItem.status} isOverride={isOverride} />
+            <ItemStatusBadge status={foundItem.status} isOverride={override} />
           </div>
 
           {foundItem.tagBarcode ? (
@@ -112,7 +113,7 @@ export function StepScanScreen({
                 <div className="photo-registered">
                   <span>✓ 처리 완료 — 포장 대기 상태로 이동됨</span>
                 </div>
-              ) : state.currentStep?.stepType === 'WAIT_CUSTOMER_DECISION' ? (
+              ) : awaitingDecision ? (
                 <div className="waiting-notice">
                   <div className="waiting-icon">⏳</div>
                   <div>
@@ -126,8 +127,8 @@ export function StepScanScreen({
                 <>
                   <div className="wash-step-row">
                     <span className="wash-step-label">현재 스텝</span>
-                    <span className={`badge ${isOverride ? 'badge-critical' : 'badge-attention'}`}>
-                      {isOverride ? '⚡ ' : ''}{state.currentStep.displayName ?? stepLabel(state.currentStep.stepType)}
+                    <span className={`badge ${override ? 'badge-critical' : 'badge-attention'}`}>
+                      {override ? '⚡ ' : ''}{state.currentStep.displayName ?? stepLabel(state.currentStep.stepType)}
                     </span>
                     <span className="badge badge-info">진행 중</span>
                   </div>
@@ -165,7 +166,7 @@ export function StepScanScreen({
                   {scanMutation.isPending ? '처리 중…' : '스캔'}
                 </button>
               ) : null}
-              {canRaiseException ? (
+              {exceptionAvailable ? (
                 <button
                   className="danger-button"
                   style={{ flex: 1, minHeight: 40, padding: '10px 16px', fontSize: 13 }}

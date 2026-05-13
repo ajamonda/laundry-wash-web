@@ -1,41 +1,49 @@
 # Auth API
 
-- Base URL: `http://localhost:3000`
-- Swagger: `http://localhost:3000/docs`
-- Auth type: staff (role `WASH`)
-- Header: `Authorization: Bearer {accessToken}`
+Base: `http://localhost:3000` · Swagger: `/docs`.
 
-## Wash Staff Dev Login
+## `POST /auth/staff/wash/dev-login`
 
-`POST /auth/staff/wash/dev-login`
+- **Auth**: none
+- **Body**: `{ staffId: string }`
+- **Resp**: `StaffSession`
+- **Transitions**: none
+- **Idem**: yes (login is repeatable; no server-side state created)
 
-Request:
-
-```json
-{ "staffId": "staff-1" }
+```ts
+type StaffSession = {
+  accessToken: string;            // JWT
+  staff: {
+    staffId: string;
+    role: 'WASH';                 // endpoint-locked
+    displayName: string | null;
+    phoneNumber: string | null;
+  };
+};
 ```
 
-Response:
+JWT payload (decoded server-side): `{ subjectType: 'STAFF', staffId, staffRole: 'WASH' }`.
 
-```json
-{
-  "accessToken": "jwt-token",
-  "staff": {
-    "staffId": "staff-1",
-    "role": "WASH",
-    "displayName": null,
-    "phoneNumber": null
-  }
-}
-```
+**Errors**
 
-- This app only calls the wash login endpoint. The role is not accepted in the body — the endpoint decides it.
-- `accessToken` is persisted to localStorage via `useAppStore` persist middleware.
+| Code | Condition |
+|---|---|
+| 404 | Staff with `staffId` not found |
+| 403 | Staff exists but role is not `WASH` |
 
-## Token Rules
+## Token usage
 
-- Staff JWT payload: `{ subjectType: "STAFF", staffId, staffRole }`
-- The server guard accepts the `WASH` or `ADMIN` role.
-- On `401`, clear the stored token and return to the login screen.
-- On `403`, show an insufficient-role state.
-- Customer tokens cannot be used on wash screens.
+Every other request: header `Authorization: Bearer {accessToken}`.
+
+| Server response | Client action |
+|---|---|
+| 401 | clear `useAppStore.session`, route to login |
+| 403 | clear `useAppStore.session`, route to login |
+
+- Server guard accepts roles `WASH` and `ADMIN`.
+- Customer tokens are rejected on wash endpoints (treated as 403).
+- No refresh endpoint exists — token expiry path is logout + re-login.
+
+## Persistence
+
+`accessToken` stored in `useAppStore.session` via zustand persist middleware (localStorage key `laundry-wash-web-state`). Survives reload until explicit logout.

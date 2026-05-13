@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../api';
-import type { CatalogOption, CatalogOptionGroup, RouteChangeRequestView, WashItemSelectedOption } from '../types';
+import { buildRepairSelection, computeRouteChangeCost } from '../domain/route-change';
+import type { RouteChangeRequestView, WashItemSelectedOption } from '../types';
 import { ErrorNotice } from './ErrorNotice';
-import { calcPrice, formatMoney, RepairOptionPicker, SelectedRepairOption } from './repair-utils';
+import { formatMoney, RepairOptionPicker, SelectedRepairOption } from './repair-utils';
 
 // ── 세탁물 종류 → 허용 경로 매핑 ──────────────────────────────────────
 const LAUNDRY_ITEMS = [
@@ -53,41 +54,6 @@ const REPAIR_ROUTES = [
   'REPAIR_AND_SHOES_CLEANING',
   'REPAIR_AND_PREMIUM_SHOES_CLEANING',
 ];
-
-function findOptionByCode(options: CatalogOption[], code: string): CatalogOption | null {
-  for (const opt of options) {
-    if (opt.code === code) return opt;
-    const found = findOptionByCode(opt.children, code);
-    if (found) return found;
-  }
-  return null;
-}
-
-function buildRepairSelection(
-  group: CatalogOptionGroup,
-  optionCode: string,
-  inputValue: string | null,
-): SelectedRepairOption | null {
-  for (const parent of group.options) {
-    const child = parent.children.find((c) => c.code === optionCode);
-    const target = parent.code === optionCode ? parent : child ?? null;
-    if (!target) continue;
-    const price = target.prices[0];
-    if (!price) return null;
-    const label = child ? `${parent.displayName} - ${target.displayName}` : target.displayName;
-    return {
-      optionCode: target.code,
-      parentCode: child ? parent.code : null,
-      displayLabel: label,
-      price,
-      requiresInput: target.requiresInput,
-      inputType: target.inputType,
-      inputUnit: target.inputUnit,
-      inputValue: inputValue ?? (target.requiresInput && target.inputType === 'NUMBER' ? '1' : ''),
-    };
-  }
-  return null;
-}
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────────────────
 export function RouteChangeForm({
@@ -152,24 +118,21 @@ export function RouteChangeForm({
   }, [needsRepairConfig, repairGroup, repairInitialized, currentSelectedOptions]);
 
   // ── 가격 계산 ─────────────────────────────────────────────────────
-  const repairCostMin = repairSelections.reduce((sum, o) => sum + calcPrice(o.price, o.inputValue).min, 0);
-  const repairCostMax = repairSelections.reduce((sum, o) => sum + calcPrice(o.price, o.inputValue).max, 0);
-
-  const newCleaningMethodCode = selectedRoute ? ROUTE_CLEANING_METHOD[selectedRoute] : undefined;
-  const newCleaningOption = newCleaningMethodCode && cleaningGroup
-    ? cleaningGroup.options.find((o) => o.code === newCleaningMethodCode) ?? null
-    : null;
-  const newCleaningPrice = newCleaningOption
-    ? calcPrice(newCleaningOption.prices[0], undefined)
-    : { min: 0, max: 0 };
-
-  const totalNewPriceMin = newCleaningPrice.min + repairCostMin;
-  const totalNewPriceMax = newCleaningPrice.max + repairCostMax;
-  const additionalCostMin = totalNewPriceMin - estimatedMinAmount;
-  const additionalCostMax = totalNewPriceMax - estimatedMinAmount;
-
-  // 가격 정보를 표시할 수 있는 경우: 경로 선택됨 + 카탈로그 로드됨 + cleaning_method 있음
-  const hasPriceInfo = !!selectedRoute && !!catalogQuery.data && newCleaningOption != null;
+  const cost = computeRouteChangeCost({
+    cleaningGroup,
+    newCleaningMethodCode: selectedRoute ? ROUTE_CLEANING_METHOD[selectedRoute] : undefined,
+    repairSelections,
+    estimatedMinAmount,
+  });
+  const { repairCost, totalNew, additionalCost } = cost;
+  const repairCostMin = repairCost.min;
+  const repairCostMax = repairCost.max;
+  const totalNewPriceMin = totalNew.min;
+  const totalNewPriceMax = totalNew.max;
+  const additionalCostMin = additionalCost.min;
+  const additionalCostMax = additionalCost.max;
+  // hasPriceInfo: cost 함수는 cleaning_method 존재 여부만 본다. 화면 표시는 경로 선택 + 카탈로그 로드도 필요.
+  const hasPriceInfo = !!selectedRoute && !!catalogQuery.data && cost.hasPriceInfo;
 
   const mutation = useMutation({
     mutationFn: () =>

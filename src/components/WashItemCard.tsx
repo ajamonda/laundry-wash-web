@@ -1,14 +1,13 @@
 import { FormEvent, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { api } from '../api';
+import { canRaiseException, canRequestRouteChange, isOverride } from '../domain/item-actions';
 import type { ProcessingRoute, WashItemView } from '../types';
 import { itemStatusLabel, routeLabel, stepLabel } from '../utils';
 import { ErrorNotice } from './ErrorNotice';
 import { ExceptionForm } from './ExceptionForm';
 import { ItemDetailsSection } from './ItemDetailsSection';
 import { RouteChangeForm } from './RouteChangeForm';
-
-const INSPECTION_STEP_TYPES = ['INSPECTING', 'RE_INSPECTION', 'PREMIUM_INSPECTING'];
 
 export function WashItemCard({
   item,
@@ -46,21 +45,15 @@ export function WashItemCard({
   });
 
   const state = item.processingState;
-  const isOverride = state?.currentStepSource === 'OVERRIDE';
-  const canRaiseException =
-    (item.status === 'SORTED' || item.status === 'PROCESSING') &&
-    !!state?.currentStep &&
-    INSPECTION_STEP_TYPES.includes(state.currentStep.stepType);
-  const canRequestRouteChange =
-    (item.status === 'SORTED' || item.status === 'PROCESSING') &&
-    !!state?.routeCode &&
-    !isOverride;
+  const override = isOverride(state);
+  const showException = canRaiseException(item, state);
+  const showRouteChange = canRequestRouteChange(item, state);
 
   return (
     <div className="wash-item-card">
       <div className="item-row-header">
         <span className="item-name">{item.displayNameSnapshot}</span>
-        <ItemStatusBadge status={item.status} isOverride={isOverride} />
+        <ItemStatusBadge status={item.status} isOverride={override} />
       </div>
 
       {item.tagBarcode ? (
@@ -74,8 +67,8 @@ export function WashItemCard({
           {state.currentStep ? (
             <div className="wash-step-row">
               <span className="wash-step-label">현재 스텝</span>
-              <span className={`badge ${isOverride ? 'badge-critical' : 'badge-attention'}`}>
-                {isOverride ? '⚡ ' : ''}{state.currentStep.displayName ?? stepLabel(state.currentStep.stepType)}
+              <span className={`badge ${override ? 'badge-critical' : 'badge-attention'}`}>
+                {override ? '⚡ ' : ''}{state.currentStep.displayName ?? stepLabel(state.currentStep.stepType)}
               </span>
               <span className={`badge ${state.currentStep.status === 'IN_PROGRESS' ? 'badge-info' : 'badge-neutral'}`}>
                 {state.currentStep.status === 'IN_PROGRESS' ? '진행 중' : '완료'}
@@ -125,7 +118,7 @@ export function WashItemCard({
 
       {!showExceptionForm && !showRouteChangeForm ? (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {canRaiseException ? (
+          {showException ? (
             <button
               className="danger-button"
               style={{ fontSize: 13, minHeight: 36, padding: '8px 14px' }}
@@ -135,7 +128,7 @@ export function WashItemCard({
               예외 처리
             </button>
           ) : null}
-          {canRequestRouteChange ? (
+          {showRouteChange ? (
             <button
               className="ghost-button"
               style={{ fontSize: 13, minHeight: 36, padding: '8px 14px' }}

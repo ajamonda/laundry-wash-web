@@ -1,150 +1,241 @@
 # Exception & Route Change API
 
-Exception flow activation, route change, and the WebSocket events staff clients consume.
+Three sub-flows wash-web drives + the staff `/exception` WebSocket. All staff endpoints: `Authorization: Bearer {accessToken}` (`WASH`).
 
-- Base URL: `http://localhost:3000`
-- Header: `Authorization: Bearer {accessToken}`
-- Auth: staff (WASH) for most endpoints. A few are customer-authenticated and listed only for reference.
+Base: `http://localhost:3000`.
 
----
+## Enums
 
-## 1. Raise Issue
+```
+IssueType:        REPAIR_REQUIRED | VENDOR_REQUIRED | PREMIUM_REQUIRED | REWASH_REQUIRED
+                | DAMAGE_RISK | STAIN_REMOVAL_FAILED | PAYMENT_PENDING
 
-`POST /wash/items/:id/raise-issue` (staff)
+FlowCode:         REPAIR_APPROVAL_FLOW | ADDITIONAL_REPAIR_FLOW
+                | VENDOR_APPROVAL_FLOW | ADDITIONAL_VENDOR_FLOW
+                | PREMIUM_APPROVAL_FLOW
+                | DAMAGE_RISK_APPROVAL_FLOW
+                | STAIN_REMOVAL_FAILED_FLOW
+                | REWASH_FLOW
 
-Record an issue on an item. Does not change processing state — only writes an audit log entry and an `item_issues` row.
+ApprovalDecision: APPROVE_REPAIR | APPROVE_VENDOR | APPROVE_PREMIUM
+                | CLEAN_WITHOUT_REPAIR | APPROVE_AS_IS
+                | RETURN_WITHOUT_PROCESSING
 
-```json
-{ "issueType": "REPAIR_REQUIRED", "note": "Seam torn on the sleeve" }
+RequestStatus:    WAITING (approval) | PENDING (route change) → RESOLVED | APPROVED | REJECTED
 ```
 
-`issueType`: `REPAIR_REQUIRED` · `VENDOR_REQUIRED` · `PREMIUM_REQUIRED` · `REWASH_REQUIRED` · `DAMAGE_RISK` · `STAIN_REMOVAL_FAILED` · `PAYMENT_PENDING`
+## FlowCode → approval / approval flow
 
-`ExceptionForm` calls this immediately before activating a flow.
+| flowCode | needs approval | first override step | last override step |
+|---|---|---|---|
+| `REPAIR_APPROVAL_FLOW` | ✓ | repair estimate | `WAIT_CUSTOMER_DECISION` |
+| `ADDITIONAL_REPAIR_FLOW` | ✓ | repair estimate | `WAIT_CUSTOMER_DECISION` |
+| `VENDOR_APPROVAL_FLOW` | ✓ | vendor estimate | `WAIT_CUSTOMER_DECISION` |
+| `ADDITIONAL_VENDOR_FLOW` | ✓ | vendor estimate | `WAIT_CUSTOMER_DECISION` |
+| `PREMIUM_APPROVAL_FLOW` | ✓ | premium estimate | `WAIT_CUSTOMER_DECISION` |
+| `DAMAGE_RISK_APPROVAL_FLOW` | ✓ | damage assessment | `WAIT_CUSTOMER_DECISION` |
+| `STAIN_REMOVAL_FAILED_FLOW` | ✓ | stain assessment | `WAIT_CUSTOMER_DECISION` |
+| `REWASH_FLOW` | ✗ | rewash step | rewash final step |
 
----
+## ApprovalDecision → server effect
 
-## 2. Activate Exception Flow
-
-`POST /wash/items/:id/activate-exception-flow` (staff)
-
-Insert the template's steps as overrides after the current route step. If the flow requires customer approval, an `approval_request` is created and the customer is notified over WebSocket.
-
-```json
-{ "flowCode": "REPAIR_APPROVAL_FLOW", "additionalCost": 5000 }
-```
-
-| flowCode | description | customer approval |
+| decision | plan effect | extra side effect |
 |---|---|---|
-| `REPAIR_APPROVAL_FLOW` | Repair approval | ✓ |
-| `ADDITIONAL_REPAIR_FLOW` | Additional repair approval | ✓ |
-| `VENDOR_APPROVAL_FLOW` | Vendor approval | ✓ |
-| `ADDITIONAL_VENDOR_FLOW` | Additional vendor approval | ✓ |
-| `PREMIUM_APPROVAL_FLOW` | Premium approval | ✓ |
-| `DAMAGE_RISK_APPROVAL_FLOW` | Damage-risk confirmation | ✓ |
-| `STAIN_REMOVAL_FAILED_FLOW` | Stain-removal failure confirmation | ✓ |
-| `REWASH_FLOW` | Rewash (no approval) | ✗ |
-
-Response: `CurrentStateView` with `currentStepSource: 'OVERRIDE'`.
-
-Errors:
-- `404` unknown flowCode
-- `409` item is not in `SORTED`/`PROCESSING`
+| `APPROVE_REPAIR` | advance to next override step | if `extraAmount ≠ 0` → SUPPLEMENT billing |
+| `APPROVE_VENDOR` | advance to next override step | if `extraAmount ≠ 0` → SUPPLEMENT billing |
+| `APPROVE_PREMIUM` | advance to next override step | if `extraAmount ≠ 0` → SUPPLEMENT billing |
+| `CLEAN_WITHOUT_REPAIR` | skip remaining overrides, resume route | mark `ItemExceptionContext` resolved |
+| `APPROVE_AS_IS` | skip remaining overrides, resume route | mark `ItemExceptionContext` resolved |
+| `RETURN_WITHOUT_PROCESSING` | skip overrides, end plan; item → `READY_FOR_DELIVERY` | mark `ItemExceptionContext` resolved |
 
 ---
 
-## 3. Progressing Through the Flow
+## `POST /wash/items/:id/raise-issue`
 
-Active override steps are advanced through the same scan-step endpoint as normal route steps (`POST /wash/tags/:tagBarcode/scan-step`).
+- **Auth**: STAFF(WASH)
+- **Body**: `{ issueType: IssueType, note?: string }`
+- **Resp**: `IssueResult`
+- **Transitions**: none
+- **Idem**: no — every call appends an `item_issues` row
 
-The `WAIT_CUSTOMER_DECISION` step is not advanced by staff scan. It is completed when the customer calls `POST /wash/approval-requests/:id/respond`.
-
-After the customer decision:
-- `APPROVE_*` → advance to the next override step
-- `CLEAN_WITHOUT_REPAIR` / `APPROVE_AS_IS` → skip remaining overrides and resume the original route
-- `RETURN_WITHOUT_PROCESSING` → skip remaining overrides; processing ends
-
----
-
-## 4. Request Route Change
-
-`POST /wash/items/:id/request-route-change` (staff)
-
-A staff member requests a route change; customer approval is required. The item must be in `SORTED`/`PROCESSING` and must have no pending route-change request and no active override.
-
-```json
-{
-  "toRouteCode": "PREMIUM_CLEANING",
-  "additionalCost": 3000,
-  "reason": "Customer follow-up request"
-}
+```ts
+type IssueResult = {
+  id: string;
+  orderItemId: string;
+  issueType: IssueType;
+  note: string | null;
+  raisedBy: string;        // staffId
+  createdAt: string;
+};
 ```
 
-- `additionalCost` is optional. Negative values are allowed (savings/refund).
-- The frontend reads `cleaning_method` prices from the catalog (`GET /catalog/items/:code`) and computes `(new total) - estimatedMinAmount` automatically.
+**Effects**
+- Insert `item_issues` row.
+- Audit log entry.
+- No processing-state change.
 
-Response:
+`ExceptionForm` always calls this immediately before `activate-exception-flow`.
 
-```json
-{
-  "id": "request-uuid",
-  "orderItemId": "...",
-  "fromRouteCode": "GENERAL_CLOTHES_CLEANING",
-  "toRouteCode": "PREMIUM_CLEANING",
-  "additionalCost": 3000,
-  "reason": "...",
-  "status": "PENDING",
-  "requestedBy": "staff-1",
-  "createdAt": "..."
-}
-```
+**Errors**
 
-On customer approval the backend:
-- Calls `routeEngine.switchRoute()` to activate the new route's plan
-- Updates the `OrderItemOption.cleaning_method` row to match the new route
-- Adjusts `OrderItem.estimatedMinAmount` by `additionalCost`
-- Creates a supplement billing row (notifiedAt = null) — the notification is flushed together with the BASE billing when the item reaches `READY_TO_PACKAGE`
+| Code | Condition |
+|---|---|
+| 404 | item not found |
+| 400 | invalid `issueType` |
 
 ---
 
-## 5. WebSocket (staff)
+## `POST /wash/items/:id/activate-exception-flow`
 
-`useWashStaffExceptionSocket` connects to the `/exception` namespace with the staff JWT. The server verifies the staff (WASH) token and joins the socket to the `wash-staff` room.
+- **Auth**: STAFF(WASH)
+- **Body**: `{ flowCode: FlowCode, additionalCost?: number }` (`additionalCost ≥ 0`, integer)
+- **Resp**: `CurrentStateView` with `currentStepSource: 'OVERRIDE'`
+- **Transitions**: `processingState.currentStepSource: ROUTE → OVERRIDE`
+- **Idem**: no
 
-Subscribed events:
+**Effects**
+- Insert override steps from the flow template after the current route step.
+- Set first override step `IN_PROGRESS`.
+- If flow requires approval: create `approval_request` (status `WAITING`); emit `exception:approval-requested` to `customer:{customerId}` on `/exception`.
+
+**Errors**
+
+| Code | Condition |
+|---|---|
+| 404 | unknown `flowCode` |
+| 404 | item not found |
+| 409 | item is not `SORTED` / `PROCESSING` |
+| 409 | item already has an active override |
+| 409 | item has a `PENDING` route-change request |
+
+---
+
+## Override progression (no dedicated endpoint)
+
+Override steps advance through the **same** `POST /wash/tags/:tagBarcode/scan-step` as route steps. Distinguishing rules for the harness:
+
+- `processingState.currentStepSource === 'OVERRIDE'` while the override stack is non-empty.
+- `scan-step` returns 409 when `currentStep.stepType === 'WAIT_CUSTOMER_DECISION'` — only a customer `respond` advances it.
+- After the last override step, source returns to `ROUTE`; next `scan-step` resumes the original route at the step after the one where the override was inserted.
+
+Customer respond endpoint (called by user-web): `POST /wash/approval-requests/:id/respond` with body `{ decision: ApprovalDecision, extraAmount?: number }`.
+
+Server effects on customer respond:
+1. `approval_request.status: WAITING → RESOLVED`, `decision`, `resolvedAt`.
+2. Plan effect per decision table above.
+3. If decision is approve-* with `extraAmount ≠ 0` → create SUPPLEMENT billing.
+4. If plan ends → item `READY_FOR_DELIVERY`.
+5. Emit `exception:approval-resolved` to `customer:{customerId}` AND `wash-staff`.
+
+---
+
+## `POST /wash/items/:id/request-route-change`
+
+- **Auth**: STAFF(WASH)
+- **Body**: `{ toRouteCode: string, additionalCost?: number, reason: string }`
+- **Resp**: `RouteChangeRequestView`
+- **Transitions**: none on item; creates `route_change_request` row in `PENDING`
+- **Idem**: no
+
+```ts
+type RouteChangeRequestView = {
+  id: string;
+  orderItemId: string;
+  fromRouteCode: string;        // server snapshots current routeCode
+  toRouteCode: string;
+  additionalCost: number | null;
+  reason: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  requestedBy: string;          // staffId
+  createdAt: string;
+};
+```
+
+**Validation** (DTO `request-route-change.dto.ts`)
+
+| field | rule |
+|---|---|
+| `toRouteCode` | `@IsString()` |
+| `additionalCost` | `@IsOptional() @IsInt()` — **may be negative** (savings/refund) |
+| `reason` | `@IsString() @MinLength(1)` |
+
+**Effects**
+- Insert `route_change_request` row, `status='PENDING'`.
+- Emit `exception:route-change-requested` to `customer:{customerId}` on `/exception`.
+
+**Errors**
+
+| Code | Condition |
+|---|---|
+| 404 | item not found |
+| 409 | item is not `SORTED` / `PROCESSING` |
+| 409 | another `PENDING` route-change request exists for this item |
+| 409 | item has an active override (`currentStepSource === 'OVERRIDE'`) |
+| 400 | DTO validation failure |
+
+### Customer approve (`POST /wash/route-change-requests/:id/approve`)
+
+Atomic side-effect sequence (`ApproveRouteChangeUseCase`):
+
+1. `routeEngine.switchRoute()` — supersede the active plan, create a new plan for `toRouteCode`, set its first step `IN_PROGRESS`.
+2. If the new route has a `cleaning_method` (see [wash-api.md](wash-api.md#route-codes--cleaning_method)): update the matching `OrderItemOption(groupCodeSnapshot='cleaning_method')` row's `catalogOptionId`, `optionCodeSnapshot`, `displayNameSnapshot` to the new option.
+3. If `additionalCost ≠ 0`:
+   - `OrderItem.estimatedMinAmount += additionalCost` (Prisma `increment` — negative OK).
+   - Create SUPPLEMENT `billing_request` with `sourceType='ROUTE_CHANGE_REQUEST', sourceId=requestId, notifiedAt=null`. **Idempotent** on `(sourceType, sourceId)`.
+4. `route_change_request.status: PENDING → APPROVED`, `respondedAt` set.
+5. Emit `exception:route-change-resolved` to `wash-staff` with `{ requestId, orderItemId, status: 'APPROVED' }`.
+
+### Customer reject (`POST /wash/route-change-requests/:id/reject`)
+
+1. `route_change_request.status: PENDING → REJECTED`, `respondedAt` set.
+2. Emit `exception:route-change-resolved` to `wash-staff` with `status: 'REJECTED'`.
+
+No other side effects on reject (no plan change, no billing, no option update).
+
+---
+
+## WebSocket (`/exception`, staff)
+
+Connect: `io('/exception', { auth: { token: 'Bearer {accessToken}' }, transports: ['websocket'] })`.
+
+Server connection handling (`ExceptionGateway.handleConnection`):
+
+| principal | room |
+|---|---|
+| `subjectType=CUSTOMER` | `customer:{customerId}` |
+| `subjectType=STAFF && staffRole=WASH` | `wash-staff` |
+| anything else | disconnect |
+
+Events delivered to `wash-staff`:
 
 ### `exception:approval-resolved`
 
-Customer responded to an exception approval request.
-
-```json
+```ts
 {
-  "approvalRequestId": "...",
-  "decision": "APPROVE_REPAIR",
-  "orderItemId": "..."
+  approvalRequestId: string;
+  decision: ApprovalDecision;
+  orderItemId: string;
 }
 ```
+
+Triggered by: customer `respond`. Also delivered to `customer:{customerId}` for the user-web.
 
 ### `exception:route-change-resolved`
 
-Customer approved or rejected a route change request.
-
-```json
+```ts
 {
-  "routeChangeRequestId": "...",
-  "orderItemId": "...",
-  "status": "APPROVED"
+  routeChangeRequestId: string;
+  orderItemId: string;
+  status: 'APPROVED' | 'REJECTED';
 }
 ```
 
-Current consumer: `OrderSearchScreen`. If a displayed item matches the event, the screen refetches automatically.
+Triggered by: customer approve or reject.
 
----
+### Consumer
 
-## Customer-side Endpoints (reference)
+`useWashStaffExceptionSocket(accessToken, handlers)` — `src/useWashStaffExceptionSocket.ts`.
 
-These are not called by wash-web, but are listed to make the flow easier to reason about.
+Currently used only by `OrderSearchScreen`: when an event's `orderItemId` matches any item currently displayed in the order, the screen invalidates the `['order-items', orderId]` query.
 
-- `POST /wash/approval-requests/:id/respond` — customer submits an exception-flow decision
-- `POST /wash/route-change-requests/:id/approve` — customer approves a route change
-- `POST /wash/route-change-requests/:id/reject` — customer rejects a route change
+Harness can rely on `orderItemId` always being present in both events.
