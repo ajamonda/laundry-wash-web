@@ -1,6 +1,12 @@
 import type { CurrentStateView, WashItemView } from '../types';
 
-export const INSPECTION_STEP_TYPES = ['INSPECTING', 'RE_INSPECTION', 'PREMIUM_INSPECTING'] as const;
+export const INSPECTION_STEP_TYPES = [
+  'INSPECTING',
+  'RE_INSPECTION',
+  'PREMIUM_INSPECTING',
+  'REPAIR_INSPECTING',
+  'PREMIUM_REPAIR_INSPECTING',
+] as const;
 
 const ACTIONABLE_STATUSES = ['SORTED', 'PROCESSING'] as const;
 

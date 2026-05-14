@@ -68,7 +68,13 @@ describe('isAwaitingDecision', () => {
 });
 
 describe('canRaiseException', () => {
-  it.each(['INSPECTING', 'RE_INSPECTION', 'PREMIUM_INSPECTING'])(
+  it.each([
+    'INSPECTING',
+    'RE_INSPECTION',
+    'PREMIUM_INSPECTING',
+    'REPAIR_INSPECTING',
+    'PREMIUM_REPAIR_INSPECTING',
+  ])(
     'allowed when status=PROCESSING and step=%s',
     (stepType) => {
       expect(
