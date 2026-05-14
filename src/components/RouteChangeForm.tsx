@@ -134,12 +134,24 @@ export function RouteChangeForm({
   // hasPriceInfo: cost 함수는 cleaning_method 존재 여부만 본다. 화면 표시는 경로 선택 + 카탈로그 로드도 필요.
   const hasPriceInfo = !!selectedRoute && !!catalogQuery.data && cost.hasPriceInfo;
 
+  // 백엔드는 수선 경로일 때만 repairOptions를 OrderItemOption 행으로 재구축한다.
+  // 비수선 경로면 어차피 무시되므로 보내지 않음. ROUTES_WITH_REPAIR(백엔드) ⊃
+  // REPAIR_ROUTES(폼)이지만 OUTSOURCED_* 경로는 폼에서 수선 picker가 노출되지
+  // 않으므로 여기서 sender 측 `needsRepairConfig`만 보면 됨.
+  const repairOptionsPayload = needsRepairConfig && repairSelections.length > 0
+    ? repairSelections.map((s) => ({
+        optionCode: s.optionCode,
+        inputValue: s.inputValue ? s.inputValue : undefined,
+      }))
+    : undefined;
+
   const mutation = useMutation({
     mutationFn: () =>
       api.requestRouteChange(token, itemId, {
         toRouteCode: selectedRoute,
         additionalCost: hasPriceInfo ? Math.round(additionalCostMin) : undefined,
         reason,
+        repairOptions: repairOptionsPayload,
       }),
     onSuccess: (result) => setSubmitted(result),
   });

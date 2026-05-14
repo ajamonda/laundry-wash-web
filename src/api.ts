@@ -107,7 +107,12 @@ export const api = {
   requestRouteChange(
     token: string,
     itemId: string,
-    input: { toRouteCode: string; additionalCost?: number; reason: string },
+    input: {
+      toRouteCode: string;
+      additionalCost?: number;
+      reason: string;
+      repairOptions?: { optionCode: string; inputValue?: string }[];
+    },
   ) {
     return request<RouteChangeRequestView>(`/wash/items/${itemId}/request-route-change`, {
       token,
